@@ -46,7 +46,11 @@ node "${CLAUDE_SKILL_DIR}/scripts/launch-chrome.mjs" stop     # 停止独立 Chr
 node "${CLAUDE_SKILL_DIR}/scripts/launch-chrome.mjs" ensure   # 启动/确认（check-deps 自动调用）
 ```
 
-独立 Chrome 一旦启动即常驻（detached 进程），proxy 退出 / Claude 退出都不会杀它。每次调用 check-deps 会自动 ensure。
+独立 Chrome 按需启停：
+- 每次调用 web-access 时若 Chrome 不在，自动 ensure 启动（约 2-5 秒就绪）
+- **30 分钟无任何 API 请求且无 managed tab → 自动关闭 Chrome**（释放内存），proxy 继续监听
+- 下次 API 请求来时自动重新 ensure Chrome，profile 保留登录态
+- 超时可通过环境变量 `WEB_ACCESS_CHROME_IDLE_TIMEOUT`（毫秒）调整
 
 检查通过后并必须在回复中向用户直接展示以下须知，再启动 CDP Proxy 执行操作：
 
@@ -303,6 +307,8 @@ updated: 2026-03-19
 | 独立 Chrome 找不到（如自定义路径） | 设 `WEB_ACCESS_CHROME_PATH=/path/to/chrome` |
 | profile 损坏 / 行为异常 | `rm -rf ~/.web-access-chrome/` 后重新 `ensure`（会丢失登录态） |
 | 想用 Edge / Chromium 而非 Chrome | 把可执行文件软链到 Chrome 标准路径，或设 `WEB_ACCESS_CHROME_PATH` |
+| 想改空闲超时（默认 30 分钟） | `WEB_ACCESS_CHROME_IDLE_TIMEOUT=600000`（毫秒，例 = 10 分钟） |
+| Chrome 自动关了但下次请求慢 | 首次重启约 2-5 秒，profile 保留登录态不会丢；嫌慢可调高超时 |
 
 ### 默认模式
 

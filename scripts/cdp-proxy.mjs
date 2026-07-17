@@ -59,6 +59,11 @@ const managedTabs = new Map(); // targetId -> { lastAccessed: number }
 const TAB_IDLE_TIMEOUT = parseInt(process.env.CDP_TAB_IDLE_TIMEOUT || '900000'); // 15 min default
 const CLEANUP_INTERVAL = 60000; // sweep every 60s
 
+// ISOLATED 模式下 Chrome 空闲超时关闭：proxy 常驻、Chrome 按需启停
+const CHROME_IDLE_TIMEOUT = parseInt(process.env.WEB_ACCESS_CHROME_IDLE_TIMEOUT || '1800000'); // 30 min
+let lastActivityAt = Date.now();                // 最后一次非 /health 请求的时间
+let chromeStopped = false;                       // Chrome 因空闲被关后置 true，下次请求时 ensure 后清除
+
 // --- WebSocket 兼容层 ---
 let WS;
 if (typeof globalThis.WebSocket !== 'undefined') {
@@ -115,6 +120,7 @@ async function discoverChromePort() {
     }
     connectedBrowser = { id: 'isolated-chrome', label: '独立 Chrome', source: 'isolated' };
     pinnedBrowserId = 'isolated-chrome';
+    chromeStopped = false;  // 已重新 ensure 并连上，清除空闲关闭标志
     console.log(`[CDP Proxy] ISOLATED 模式：连接独立 Chrome (端口 ${ISOLATED_CHROME_PORT}，wsPath ${wsPath})`);
     return { port: ISOLATED_CHROME_PORT, wsPath };
   }
@@ -338,6 +344,26 @@ async function closeAllManagedTabs() {
   if (targets.length) console.log(`[CDP Proxy] Shutdown: closed ${targets.length} managed tab(s)`);
 }
 
+// --- ISOLATED 模式：Chrome 空闲超时关闭 ---
+// 30 分钟（可配）无任何 API 请求且无 managed tab → spawn launch-chrome stop
+// 下次 API 请求来时，discoverChromePort 会自动 ensure Chrome 重启（约 10s）
+function checkChromeIdle() {
+  if (!ISOLATED || chromeStopped) return;
+  if (managedTabs.size > 0) return;          // 还有 tab 没关，算在用
+  if (Date.now() - lastActivityAt < CHROME_IDLE_TIMEOUT) return;
+
+  const launchScript = path.join(path.dirname(new URL(import.meta.url).pathname), 'launch-chrome.mjs');
+  console.log(`[CDP Proxy] ISOLATED 模式：Chrome 空闲 ${Math.round(CHROME_IDLE_TIMEOUT / 60000)}min，自动关闭`);
+  const r = spawnSync(process.execPath, [launchScript, 'stop'], { stdio: 'inherit' });
+  if (r.status === 0) {
+    chromeStopped = true;
+    // 主动断开 ws，触发 onClose 清理状态
+    try { ws?.close(); } catch { /* ignore */ }
+  } else {
+    console.error('[CDP Proxy] launch-chrome stop 失败，下次 sweep 重试');
+  }
+}
+
 // --- 等待页面加载 ---
 async function waitForLoad(sessionId, timeoutMs = 15000) {
   // 启用 Page 域
@@ -385,7 +411,10 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
   try {
-    // /health 不需要连接浏览器
+    // /health 不算"活动"（用于外部健康检查/排程探测），不更新空闲计时
+    if (pathname !== '/health') {
+      lastActivityAt = Date.now();
+    }
     if (pathname === '/health') {
       const connected = ws && (ws.readyState === WS.OPEN || ws.readyState === 1);
       res.end(JSON.stringify({
@@ -774,6 +803,10 @@ async function main() {
   // 定时清理闲置 tab
   const cleanupTimer = setInterval(cleanupIdleTabs, CLEANUP_INTERVAL);
   cleanupTimer.unref();
+
+  // 定时检查 Chrome 空闲超时（仅 ISOLATED 模式）
+  const idleTimer = setInterval(checkChromeIdle, CLEANUP_INTERVAL);
+  idleTimer.unref();
 
   const shutdown = async (sig) => {
     console.log(`[CDP Proxy] ${sig}, cleaning up...`);
