@@ -625,6 +625,26 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ success: true, files: body.files.length }));
     }
 
+    // POST /type?target=xxx — 通过 CDP Input.insertText 真实输入文本
+    // 用于 Angular/Quill/React 等不响应 JS 模拟事件的富文本/受控组件
+    // body: 要输入的文本（先 focus 目标元素，否则事件丢失）
+    else if (pathname === '/type') {
+      const sid = await ensureSession(q.target);
+      const text = await readBody(req);
+      if (!text) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: 'POST body 需要文本' }));
+        return;
+      }
+      const resp = await sendCDP('Input.insertText', { text }, sid);
+      if (resp.error) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: resp.error.message }));
+      } else {
+        res.end(JSON.stringify({ ok: true }));
+      }
+    }
+
     // GET /scroll?target=xxx&y=3000 - 滚动
     else if (pathname === '/scroll') {
       const sid = await ensureSession(q.target);
