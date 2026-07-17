@@ -1,3 +1,5 @@
 .DS_Store
 *.log
 references/site-patterns/*.md
+*_backup_*.md
+*_backup_*.mjs

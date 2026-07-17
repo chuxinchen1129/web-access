@@ -499,7 +499,7 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ value: resp.result?.result?.value }));
     }
 
-    // GET /screenshot?target=xxx&file=/tmp/x.png - 截图
+    // GET /screenshot?target=xxx&file=/tmp/x.png - 视口截图（仅当前可见区域）
     else if (pathname === '/screenshot') {
       const sid = await ensureSession(q.target);
       const format = q.format || 'png';
@@ -510,6 +510,66 @@ const server = http.createServer(async (req, res) => {
       if (q.file) {
         fs.writeFileSync(q.file, Buffer.from(resp.result.data, 'base64'));
         res.end(JSON.stringify({ saved: q.file }));
+      } else {
+        res.setHeader('Content-Type', 'image/' + format);
+        res.end(Buffer.from(resp.result.data, 'base64'));
+      }
+    }
+
+    // GET /screenshotFull?target=xxx&file=/tmp/x.png
+    // 全页截图 + 可选设备模拟（默认移动端视口）。常用场景：HTML 文档 / 网页转 PNG 预览。
+    // 参数（均可选）：
+    //   width=414 height=900 dpr=2 mobile=true format=png
+    //   full=true（默认；false 时退化为视口截图）
+    //   reset=true（默认；操作完成后还原设备模拟，避免污染用户 tab）
+    else if (pathname === '/screenshotFull') {
+      const sid = await ensureSession(q.target);
+      const format = q.format || 'png';
+      const width = parseInt(q.width || '414');
+      const height = parseInt(q.height || '900');
+      const dpr = parseFloat(q.dpr || '2');
+      const mobile = q.mobile !== 'false'; // 默认 true
+      const full = q.full !== 'false'; // 默认 true
+      const resetAfter = q.reset !== 'false'; // 默认 true
+
+      // 1) 设备模拟
+      await sendCDP('Emulation.setDeviceMetricsOverride', {
+        width, height, deviceScaleFactor: dpr, mobile,
+        screenWidth: width, screenHeight: height,
+      }, sid);
+
+      // 2) 等布局稳定（响应式断点 / 字体 / 图片）
+      await new Promise(r => setTimeout(r, 600));
+
+      // 3) 读全页尺寸
+      const dimsResp = await sendCDP('Runtime.evaluate', {
+        expression: 'JSON.stringify({w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight})',
+        returnByValue: true,
+      }, sid);
+      const dims = JSON.parse(dimsResp.result?.result?.value || '{}');
+      const finalW = dims.w || width;
+      const finalH = full ? (dims.h || height) : height;
+
+      // 4) 截图
+      const shotParams = {
+        format,
+        quality: format === 'jpeg' ? 80 : undefined,
+        fromSurface: true,
+      };
+      if (full) {
+        shotParams.captureBeyondViewport = true;
+        shotParams.clip = { x: 0, y: 0, width: finalW, height: finalH, scale: 1 };
+      }
+      const resp = await sendCDP('Page.captureScreenshot', shotParams, sid);
+
+      // 5) 还原设备模拟（避免影响用户后续浏览）
+      if (resetAfter) {
+        try { await sendCDP('Emulation.clearDeviceMetricsOverride', {}, sid); } catch { /* 非致命 */ }
+      }
+
+      if (q.file) {
+        fs.writeFileSync(q.file, Buffer.from(resp.result.data, 'base64'));
+        res.end(JSON.stringify({ saved: q.file, width: finalW, height: finalH, mobile, dpr }));
       } else {
         res.setHeader('Content-Type', 'image/' + format);
         res.end(Buffer.from(resp.result.data, 'base64'));
@@ -541,7 +601,8 @@ const server = http.createServer(async (req, res) => {
           '/eval?target=': 'POST body=JS表达式 - 执行 JS',
           '/click?target=': 'POST body=CSS选择器 - 点击元素',
           '/scroll?target=&y=&direction=': 'GET - 滚动页面',
-          '/screenshot?target=&file=': 'GET - 截图',
+          '/screenshot?target=&file=': 'GET - 视口截图（仅当前可见区域）',
+          '/screenshotFull?target=&file=&width=414&height=900&dpr=2&mobile=true': 'GET - 全页截图 + 设备模拟（默认移动端）',
         },
       }));
     }

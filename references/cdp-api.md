@@ -83,10 +83,46 @@ curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
 ```
 
 ### GET /screenshot?target=ID&file=/tmp/shot.png
-截图。指定 `file` 参数保存到本地文件；不指定则返回图片二进制。可选 `format=jpeg`。
+视口截图（仅当前可见区域）。指定 `file` 参数保存到本地文件；不指定则返回图片二进制。可选 `format=jpeg`。
 ```bash
 curl -s "http://localhost:3456/screenshot?target=ID&file=/tmp/shot.png"
 ```
+
+### GET /screenshotFull?target=ID&file=/tmp/x.png
+全页截图 + 可选设备模拟。默认参数适配**移动端样式**（414×900 视口、DPR 2、`@media (max-width)` 断点会按移动端生效），常用于 HTML 文档 / 网页转 PNG 预览。
+
+**为什么需要它**：`/screenshot` 只截视口（首屏），长文档只截到顶部一段；`/screenshotFull` 用 `Emulation.setDeviceMetricsOverride` 设备模拟 + `Page.captureScreenshot { captureBeyondViewport: true }` 截到完整内容。
+
+**参数（均有默认值）**：
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `width` | 414 | CSS 视口宽，对应主流移动端（iPhone 12/13/14 Plus 等） |
+| `height` | 900 | 视口高（仅作为渲染窗口；全页时实际高度按 `scrollHeight`） |
+| `dpr` | 2 | 设备像素比，影响图片清晰度 |
+| `mobile` | true | 是否启用 mobile UA 标识（影响 `@media (max-width)` 与 viewport meta 行为） |
+| `full` | true | true 截整页（`scrollHeight`）；false 退化为视口截图 |
+| `format` | png | `png` 或 `jpeg` |
+| `file` | - | 输出文件路径；不指定则返回二进制 |
+| `reset` | true | 操作完成后还原设备模拟，避免污染用户 tab |
+
+**返回**（指定 `file` 时）：`{ saved, width, height, mobile, dpr }`
+
+```bash
+# 默认：移动端样式 + 全页
+curl -s "http://localhost:3456/screenshotFull?target=ID&file=/tmp/full.png"
+
+# 桌面端全页
+curl -s "http://localhost:3456/screenshotFull?target=ID&file=/tmp/desktop.png&width=1440&height=900&dpr=2&mobile=false"
+
+# 只截首屏（移动端视口，无全页）
+curl -s "http://localhost:3456/screenshotFull?target=ID&file=/tmp/viewport.png&full=false"
+```
+
+**注意事项**：
+- 在新建 tab 上调用（`/new` 后再 `/screenshotFull`），不要在用户当前正在浏览的 tab 上调用——设备模拟会临时改变 viewport，期间用户若切换回该 tab 可能看到布局跳变（已默认 `reset=true` 在操作完成后还原）
+- 操作完用 `/close` 关闭自己创建的 tab，保持环境整洁
+- 页面若依赖懒加载图片，截前先 `/scroll?direction=bottom` 触发加载，再 `/screenshotFull`
+
 
 ## /eval 使用提示
 

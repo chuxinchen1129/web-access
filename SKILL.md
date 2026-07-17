@@ -55,6 +55,7 @@ node "$CLAUDE_SKILL_DIR/scripts/check-deps.mjs"
 | URL 已知，需要原始 HTML 源码（meta、JSON-LD 等结构化字段） | **curl** |
 | 非公开内容，或已知静态层无效的平台（小红书、微信公众号等公开内容也被反爬限制） | **浏览器 CDP**（直接，跳过静态层） |
 | 需要登录态、交互操作，或需要像人一样在浏览器内自由导航探索 | **浏览器 CDP** |
+| 网页 / HTML 文档转 PNG（移动端样式、全页截图） | **浏览器 CDP** `/screenshotFull` |
 
 浏览器 CDP 不要求 URL 已知——可从任意入口出发，通过页面内搜索、点击、跳转等方式找到目标内容。WebSearch、WebFetch、curl 均不处理登录态。
 
@@ -145,6 +146,8 @@ curl -s "http://localhost:3456/close?target=ID"
 ### 媒体资源提取
 
 判断内容在图片里时，用 `/eval` 从 DOM 直接拿图片 URL，再定向读取——比全页截图精准得多。
+
+需要把整个页面（或 HTML 文档）以 PNG 形式保存时，用 `/screenshotFull` —— 支持**设备模拟**（默认移动端 414×900、DPR 2，CSS `@media (max-width)` 断点会按移动端生效）+ **全页截图**（截到 `scrollHeight`，不会只截首屏）。详见 `references/cdp-api.md`。典型场景：HTML 报告 / 备调文档转图片便于 AirDrop 或微信传文件、网页设计快照、移动端 vs 桌面端双视图对比。
 
 ### 技术事实
 - 页面中存在大量已加载但未展示的内容——轮播中非当前帧的图片、折叠区块的文字、懒加载占位元素等，它们存在于 DOM 中但对用户不可见。以数据结构（容器、属性、节点关系）为单位思考，可以直接触达这些内容。
