@@ -17,13 +17,34 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectBrowser, knownBrowsers, findFallbackPort } from './browser-discovery.mjs';
 
-const ISOLATED = process.env.WEB_ACCESS_ISOLATED === '1';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
 const LAUNCH_SCRIPT = path.join(ROOT, 'scripts', 'launch-chrome.mjs');
-const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || (ISOLATED ? 3457 : 3456));
 const CONFIG_PATH = path.join(ROOT, 'config.env');
 const CONFIG_TEMPLATE = path.join(ROOT, 'templates', 'config.env.template');
+
+// 从 config.env 读 WEB_ACCESS_ISOLATED 偏好；进程环境变量优先级更高（在调用方处理）
+function readIsolatedFromConfig() {
+  try {
+    const content = fs.readFileSync(CONFIG_PATH, 'utf8');
+    for (const line of content.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const i = t.indexOf('=');
+      if (i === -1) continue;
+      const k = t.slice(0, i).trim();
+      const v = t.slice(i + 1).trim();
+      if (k === 'WEB_ACCESS_ISOLATED') return v === '1';
+    }
+  } catch { /* config.env 不存在 */ }
+  // 默认值：独立 Chrome 模式
+  return true;
+}
+
+const ISOLATED = process.env.WEB_ACCESS_ISOLATED !== undefined
+  ? process.env.WEB_ACCESS_ISOLATED === '1'
+  : readIsolatedFromConfig();
+const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || (ISOLATED ? 3457 : 3456));
 
 // --- 参数解析 ---
 
@@ -187,6 +208,7 @@ async function resolveAndReport(override) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   checkNode();
+  ensureConfigExists();
 
   // ISOLATED 模式：跳过 browser-discovery 整套，直接启动独立 Chrome + proxy
   if (ISOLATED) {
@@ -200,8 +222,6 @@ async function main() {
     if (!proxyOk) process.exit(1);
     return;
   }
-
-  ensureConfigExists();
 
   const { proceed, exitCode, browserId } = await resolveAndReport(opts.browser);
   if (!proceed) process.exit(exitCode);

@@ -16,8 +16,28 @@ import net from 'node:net';
 import { selectBrowser, findFallbackPort, checkPort } from './browser-discovery.mjs';
 import { spawnSync } from 'node:child_process';
 
-const ISOLATED = process.env.WEB_ACCESS_ISOLATED === '1';
+const ISOLATED = process.env.WEB_ACCESS_ISOLATED !== undefined
+  ? process.env.WEB_ACCESS_ISOLATED === '1'
+  : readIsolatedFromConfig();
 const ISOLATED_CHROME_PORT = Number(process.env.WEB_ACCESS_CHROME_PORT || 9224);
+
+// 从 config.env 读 ISOLATED 偏好（与 check-deps.mjs 同逻辑，因为 proxy 是 detached 启动）
+function readIsolatedFromConfig() {
+  try {
+    const skillRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+    const content = fs.readFileSync(path.join(skillRoot, 'config.env'), 'utf8');
+    for (const line of content.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith('#')) continue;
+      const i = t.indexOf('=');
+      if (i === -1) continue;
+      if (t.slice(0, i).trim() === 'WEB_ACCESS_ISOLATED') {
+        return t.slice(i + 1).trim() === '1';
+      }
+    }
+  } catch { /* config.env 不存在 */ }
+  return true;
+}
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
