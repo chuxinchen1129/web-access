@@ -2,6 +2,10 @@
 // CDP Proxy - 通过 HTTP API 操控用户日常浏览器（Chrome / Edge / Chromium 等）
 // 要求：浏览器已开启 remote debugging（chrome://inspect#remote-debugging toggle）
 // Node.js 22+（使用原生 WebSocket）
+//
+// ISOLATED 模式（WEB_ACCESS_ISOLATED=1）：
+//   连接 launch-chrome.mjs 启动的独立 Chrome 实例（固定端口 9224，独立 profile）
+//   完全跳过 browser-discovery，proxy 默认监听 3457 避开默认模式
 
 import http from 'node:http';
 import { URL } from 'node:url';
@@ -9,7 +13,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
-import { selectBrowser, findFallbackPort } from './browser-discovery.mjs';
+import { selectBrowser, findFallbackPort, checkPort } from './browser-discovery.mjs';
+import { spawnSync } from 'node:child_process';
+
+const ISOLATED = process.env.WEB_ACCESS_ISOLATED === '1';
+const ISOLATED_CHROME_PORT = Number(process.env.WEB_ACCESS_CHROME_PORT || 9224);
 
 // --- 解析命令行 --browser 参数（本次启动用哪个浏览器）---
 function parseBrowserArg() {
@@ -22,7 +30,7 @@ function parseBrowserArg() {
 }
 const BROWSER_OVERRIDE = parseBrowserArg();
 
-const PORT = parseInt(process.env.CDP_PROXY_PORT || '3456');
+const PORT = parseInt(process.env.CDP_PROXY_PORT || (ISOLATED ? '3457' : '3456'));
 let ws = null;
 let cmdId = 0;
 const pending = new Map(); // id -> {resolve, timer}
@@ -56,6 +64,41 @@ let pinnedBrowserId = null;
 // --- 自动发现浏览器调试端口 ---
 // 决策完全委派给 browser-discovery.selectBrowser；此处只做日志和返回结构包装。
 async function discoverChromePort() {
+  // ISOLATED 模式：固定端口连独立 Chrome，不走 browser-discovery
+  if (ISOLATED) {
+    if (!await checkPort(ISOLATED_CHROME_PORT)) {
+      // 尝试自动启动独立 Chrome
+      const launchScript = path.join(path.dirname(new URL(import.meta.url).pathname), 'launch-chrome.mjs');
+      const r = spawnSync(process.execPath, [launchScript, 'ensure'], { stdio: 'inherit' });
+      if (r.status !== 0) {
+        throw new Error(`独立 Chrome 未运行且自动启动失败（端口 ${ISOLATED_CHROME_PORT}）`);
+      }
+      if (!await checkPort(ISOLATED_CHROME_PORT)) {
+        throw new Error(`独立 Chrome 启动后端口 ${ISOLATED_CHROME_PORT} 仍未监听`);
+      }
+    }
+    // 调 /json/version 拿 webSocketDebuggerUrl，从中提取 wsPath（带 UUID，Chrome 现在要求）
+    let wsPath = null;
+    try {
+      const resp = await fetch(`http://127.0.0.1:${ISOLATED_CHROME_PORT}/json/version`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      const data = await resp.json();
+      const wsUrl = data.webSocketDebuggerUrl || '';
+      const m = wsUrl.match(/\/devtools\/browser\/[a-f0-9-]+/);
+      if (m) wsPath = m[0];
+    } catch (e) {
+      console.error(`[CDP Proxy] 获取独立 Chrome wsPath 失败: ${e.message}`);
+    }
+    if (!wsPath) {
+      throw new Error(`无法从 http://127.0.0.1:${ISOLATED_CHROME_PORT}/json/version 获取 wsPath`);
+    }
+    connectedBrowser = { id: 'isolated-chrome', label: '独立 Chrome', source: 'isolated' };
+    pinnedBrowserId = 'isolated-chrome';
+    console.log(`[CDP Proxy] ISOLATED 模式：连接独立 Chrome (端口 ${ISOLATED_CHROME_PORT}，wsPath ${wsPath})`);
+    return { port: ISOLATED_CHROME_PORT, wsPath };
+  }
+
   const result = await selectBrowser(BROWSER_OVERRIDE);
   if (result.kind === 'ok') {
     if (pinnedBrowserId && pinnedBrowserId !== result.browser.id) {

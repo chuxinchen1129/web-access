@@ -4,20 +4,24 @@
 // 用法：
 //   node check-deps.mjs                  默认行为：读 config.env 偏好
 //   node check-deps.mjs --browser edge   本次临时指定浏览器（不写 config.env）
+//   WEB_ACCESS_ISOLATED=1 node check-deps.mjs   ISOLATED 模式（独立 Chrome）
 //
 // 持久偏好 → config.env (skill 根目录, gitignored)
 // 单次覆盖 → --browser 命令行参数（全链路 argv，不碰 process.env）
+// 独立模式 → WEB_ACCESS_ISOLATED=1 环境变量
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectBrowser, knownBrowsers, findFallbackPort } from './browser-discovery.mjs';
 
+const ISOLATED = process.env.WEB_ACCESS_ISOLATED === '1';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PROXY_SCRIPT = path.join(ROOT, 'scripts', 'cdp-proxy.mjs');
-const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || 3456);
+const LAUNCH_SCRIPT = path.join(ROOT, 'scripts', 'launch-chrome.mjs');
+const PROXY_PORT = Number(process.env.CDP_PROXY_PORT || (ISOLATED ? 3457 : 3456));
 const CONFIG_PATH = path.join(ROOT, 'config.env');
 const CONFIG_TEMPLATE = path.join(ROOT, 'templates', 'config.env.template');
 
@@ -182,8 +186,22 @@ async function resolveAndReport(override) {
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
-  ensureConfigExists();
   checkNode();
+
+  // ISOLATED 模式：跳过 browser-discovery 整套，直接启动独立 Chrome + proxy
+  if (ISOLATED) {
+    console.log('mode: ISOLATED（独立 Chrome，profile ~/.web-access-chrome）');
+    const r = spawnSync(process.execPath, [LAUNCH_SCRIPT, 'ensure'], { stdio: 'inherit' });
+    if (r.status !== 0) {
+      console.error('独立 Chrome 启动失败，中止');
+      process.exit(1);
+    }
+    const proxyOk = await ensureProxy(null, null);
+    if (!proxyOk) process.exit(1);
+    return;
+  }
+
+  ensureConfigExists();
 
   const { proceed, exitCode, browserId } = await resolveAndReport(opts.browser);
   if (!proceed) process.exit(exitCode);
