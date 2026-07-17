@@ -33,11 +33,13 @@ function findChromeExecutable() {
   }
 
   if (platform === 'darwin') {
-    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
+    // 优先用独立 binary，避免和用户日常 Chrome.app 冲突（macOS 同一 app 只能开一个实例）
+    // Chromium 无签名会被 Gatekeeper 拦，Chrome Canary 是 Google 官方签名最稳
     candidates.push('/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary');
     candidates.push('/Applications/Chromium.app/Contents/MacOS/Chromium');
+    candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome');
   } else if (platform === 'linux') {
-    candidates.push('google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium');
+    candidates.push('chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable');
   } else if (platform === 'win32') {
     const pf = process.env.ProgramFiles || 'C:\\Program Files';
     const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
